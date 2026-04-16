@@ -63,10 +63,21 @@ class ShutdownManager:
         if self._is_windows:
             for proc in tuple(self.processes):
                 if proc.returncode is None:
-                    self._io.print_debug(
-                        " ! Sending CTRL_BREAK_EVENT to subprocess %s", proc.pid
-                    )
-                    proc.send_signal(signal.CTRL_BREAK_EVENT)
+                    if not bool(getattr(proc, "_poe_disable_console_ctrl", False)):
+                        self._io.print_debug(
+                            " ! Sending CTRL_BREAK_EVENT to subprocess %s", proc.pid
+                        )
+                        proc.send_signal(signal.CTRL_BREAK_EVENT)
+                    else:
+                        self._io.print_debug(
+                            " ! Force-terminating subprocess %s "
+                            "to avoid console corruption",
+                            proc.pid,
+                        )
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                            capture_output=True,
+                        )
                 else:
                     self.processes.discard(proc)
         else:
@@ -128,7 +139,7 @@ class ShutdownManager:
 
     def _send_signal_to_group(self, proc: Process, sig: int):
         with contextlib.suppress(ProcessLookupError):
-            os.killpg(os.getpgid(proc.pid), sig)
+            os.killpg(os.getpgid(proc.pid), sig)  # type: ignore[attr-defined]
 
     def _propagate_sighup(self, signum=None, frame=None):
         """

@@ -278,6 +278,13 @@ class PoeExecutor(metaclass=MetaPoeExecutor):
         else:
             proc = await asyncio.create_subprocess_exec(*cmd, **popen_kwargs)
 
+        if self._is_windows:
+            # Fix for issue #379 since ctrl+c can leave shell in a weird state
+            # so disable ctrl+c handling for subprocesses launched from batch files
+            cast("Any", proc)._poe_disable_console_ctrl = (
+                cmd[0].lower().endswith((".bat", ".cmd"))
+            )
+
         if input is not None:
             # TODO: Track the write task so we can cancel it if needed, and prevent GC
             #       from cleaning it up too early
