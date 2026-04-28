@@ -1,9 +1,15 @@
+import asyncio
 import os
 import signal
 import sys
 import time
+from typing import Any, cast
 
 import pytest
+
+from poethepoet.executor.base import PoeProcess
+from poethepoet.io import PoeIO
+from poethepoet.shutdown import ShutdownManager
 
 
 def _wait_for_proc_exit(proc, timeout: float = 5.0) -> bool:
@@ -35,6 +41,76 @@ def _pid_exists(pid: int) -> bool:
         return True
     except ProcessLookupError:
         return False
+
+
+def test_windows_shutdown_avoids_console_ctrl_for_batch_processes(monkeypatch):
+    ctrl_break_event = getattr(signal, "CTRL_BREAK_EVENT", 1)
+    monkeypatch.setattr(signal, "CTRL_BREAK_EVENT", ctrl_break_event, raising=False)
+
+    class FakeProcess:
+        def __init__(self):
+            self.pid = 12345
+            self.returncode = None
+            self.signal_calls: list[int] = []
+
+        def send_signal(self, sig: int):
+            self.signal_calls.append(sig)
+
+    taskkill_calls: list[list[str]] = []
+
+    def fake_taskkill(cmd: list[str], **_kwargs):
+        taskkill_calls.append(cmd)
+
+    monkeypatch.setattr("subprocess.run", fake_taskkill)
+
+    loop = asyncio.new_event_loop()
+    manager = ShutdownManager(loop, PoeIO(make_default=False))
+    manager._is_windows = True
+    fake_proc = FakeProcess()
+    process = PoeProcess(cast("Any", fake_proc), no_console_ctrl=True)
+    manager.processes.add(process)
+
+    manager._urgency = 1
+    manager._shutdown()
+
+    assert fake_proc.signal_calls == []
+    assert taskkill_calls == [["taskkill", "/T", "/PID", str(process.pid)]]
+    loop.close()
+
+
+def test_windows_shutdown_sends_ctrl_break_for_normal_processes(monkeypatch):
+    ctrl_break_event = getattr(signal, "CTRL_BREAK_EVENT", 1)
+    monkeypatch.setattr(signal, "CTRL_BREAK_EVENT", ctrl_break_event, raising=False)
+
+    class FakeProcess:
+        def __init__(self):
+            self.pid = 12345
+            self.returncode = None
+            self.signal_calls: list[int] = []
+
+        def send_signal(self, sig: int):
+            self.signal_calls.append(sig)
+
+    taskkill_calls: list[list[str]] = []
+
+    def fake_taskkill(cmd: list[str], **_kwargs):
+        taskkill_calls.append(cmd)
+
+    monkeypatch.setattr("subprocess.run", fake_taskkill)
+
+    loop = asyncio.new_event_loop()
+    manager = ShutdownManager(loop, PoeIO(make_default=False))
+    manager._is_windows = True
+    fake_proc = FakeProcess()
+    process = PoeProcess(cast("Any", fake_proc))
+    manager.processes.add(process)
+
+    manager._urgency = 1
+    manager._shutdown()
+
+    assert fake_proc.signal_calls == [ctrl_break_event]
+    assert taskkill_calls == []
+    loop.close()
 
 
 @pytest.fixture
@@ -121,7 +197,7 @@ def test_sighup_terminates_task_and_children(long_running_task):
     assert _pid_exists(child_pid), "child should be running"
 
     # Send SIGHUP
-    poe_handle.process.send_signal(signal.SIGHUP)
+    poe_handle.process.send_signal(cast("Any", signal).SIGHUP)
 
     # Both should exit (SIGHUP propagates to children and triggers shutdown)
     assert _wait_for_proc_exit(poe_handle.process), "poe should exit after SIGHUP"
